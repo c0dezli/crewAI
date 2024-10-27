@@ -4,9 +4,9 @@ from json_repair import repair_json
 
 from crewai.utilities import I18N
 
-FINAL_ANSWER_ACTION = "Final Answer:"
-MISSING_ACTION_AFTER_THOUGHT_ERROR_MESSAGE = "I did it wrong. Invalid Format: I missed the 'Action:' after 'Thought:'. I will do right next, and don't use a tool I have already used.\n"
-MISSING_ACTION_INPUT_AFTER_ACTION_ERROR_MESSAGE = "I did it wrong. Invalid Format: I missed the 'Action Input:' after 'Action:'. I will do right next, and don't use a tool I have already used.\n"
+FINAL_ANSWER_ACTION = "<final_answer>"
+MISSING_ACTION_AFTER_THOUGHT_ERROR_MESSAGE = "I did it wrong. Invalid Format: I missed the '<action>' after '<thought>'. I will do right next, and don't use a tool I have already used.\n"
+MISSING_ACTION_INPUT_AFTER_ACTION_ERROR_MESSAGE = "I did it wrong. Invalid Format: I missed the '<action_input>' after '<action>'. I will do right next, and don't use a tool I have already used.\n"
 FINAL_ANSWER_AND_PARSABLE_ACTION_ERROR_MESSAGE = "I did it wrong. Tried to both perform Action and give a Final Answer at the same time, I must do one or the other"
 
 
@@ -51,16 +51,17 @@ class CrewAgentParser:
     should be in the below format. This will result in an AgentAction
     being returned.
 
-    Thought: agent thought here
-    Action: search
-    Action Input: what is the temperature in SF?
+
+    <thought>agent thought here</thought>
+    <action>search</action>
+    <action_input>what is the temperature in SF?</action_input>
 
     If the output signals that a final answer should be given,
     should be in the below format. This will result in an AgentFinish
     being returned.
 
-    Thought: agent thought here
-    Final Answer: The temperature is 100 degrees
+    <thought>agent thought here</thought>
+    <answer>The temperature is 100 degrees</answer>
     """
 
     _i18n: I18N = I18N()
@@ -71,11 +72,12 @@ class CrewAgentParser:
 
     def parse(self, text: str) -> Union[AgentAction, AgentFinish]:
         thought = self._extract_thought(text)
-        includes_answer = FINAL_ANSWER_ACTION in text
-        regex = (
-            r"Action\s*\d*\s*:[\s]*(.*?)[\s]*Action\s*\d*\s*Input\s*\d*\s*:[\s]*(.*)"
-        )
-        action_match = re.search(regex, text, re.DOTALL)
+        includes_answer = '<answer>' in text
+        
+        # Updated regex for XML-style tags
+        action_regex = r'<action>(.*?)</action>.*?<action_input>(.*?)</action_input>'
+        action_match = re.search(action_regex, text, re.DOTALL)
+        
         if action_match:
             if includes_answer:
                 raise OutputParserException(
@@ -84,25 +86,25 @@ class CrewAgentParser:
             action = action_match.group(1)
             clean_action = self._clean_action(action)
 
-            action_input = action_match.group(2).strip()
-
-            tool_input = action_input.strip(" ").strip('"')
+            action_input = action_match.group(2)
+            tool_input = action_input.strip()
             safe_tool_input = self._safe_repair_json(tool_input)
 
             return AgentAction(thought, clean_action, safe_tool_input, text)
 
         elif includes_answer:
-            final_answer = text.split(FINAL_ANSWER_ACTION)[-1].strip()
-            return AgentFinish(thought, final_answer, text)
+            answer_regex = r'<answer>(.*?)</answer>'
+            answer_match = re.search(answer_regex, text, re.DOTALL)
+            if answer_match:
+                final_answer = answer_match.group(1).strip()
+                return AgentFinish(thought, final_answer, text)
 
-        if not re.search(r"Action\s*\d*\s*:[\s]*(.*?)", text, re.DOTALL):
+        if not re.search(r'<action>.*?</action>', text, re.DOTALL):
             self.agent.increment_formatting_errors()
             raise OutputParserException(
                 f"{MISSING_ACTION_AFTER_THOUGHT_ERROR_MESSAGE}\n{self._i18n.slice('final_answer_format')}",
             )
-        elif not re.search(
-            r"[\s]*Action\s*\d*\s*Input\s*\d*\s*:[\s]*(.*)", text, re.DOTALL
-        ):
+        elif not re.search(r'<action_input>.*?</action_input>', text, re.DOTALL):
             self.agent.increment_formatting_errors()
             raise OutputParserException(
                 MISSING_ACTION_INPUT_AFTER_ACTION_ERROR_MESSAGE,
@@ -116,8 +118,8 @@ class CrewAgentParser:
             )
 
     def _extract_thought(self, text: str) -> str:
-        regex = r"(.*?)(?:\n\nAction|\n\nFinal Answer)"
-        thought_match = re.search(regex, text, re.DOTALL)
+        thought_regex = r'<thought>(.*?)</thought>'
+        thought_match = re.search(thought_regex, text, re.DOTALL)
         if thought_match:
             return thought_match.group(1).strip()
         return ""

@@ -125,14 +125,16 @@ class CrewAgentExecutor(CrewAgentExecutorMixin):
                                 FINAL_ANSWER_AND_PARSABLE_ACTION_ERROR_MESSAGE
                                 in e.error
                             ):
-                                answer = answer.split("Observation:")[0].strip()
+                                answer = answer.split("<observation>")[0].strip()
 
                     self.iterations += 1
                     formatted_answer = self._format_answer(answer)
 
                     if isinstance(formatted_answer, AgentAction):
                         action_result = self._use_tool(formatted_answer)
-                        formatted_answer.text += f"\nObservation: {action_result}"
+                        formatted_answer.text += (
+                            f"\n<observation>{action_result}</observation>"
+                        )
                         formatted_answer.result = action_result
                         self._show_logs(formatted_answer)
 
