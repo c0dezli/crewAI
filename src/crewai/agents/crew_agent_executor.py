@@ -132,7 +132,9 @@ class CrewAgentExecutor(CrewAgentExecutorMixin):
 
                     if isinstance(formatted_answer, AgentAction):
                         action_result = self._use_tool(formatted_answer)
-                        formatted_answer.text += f"\nObservation: {action_result}"
+                        formatted_answer.text += (
+                            f"\nObservation: <observation>{action_result}</observation>"
+                        )
                         formatted_answer.result = action_result
                         self._show_logs(formatted_answer)
 
