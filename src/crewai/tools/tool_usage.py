@@ -388,54 +388,60 @@ class ToolUsage:
 
     def _validate_tool_input(self, tool_input: str) -> str:
         try:
-            ast.literal_eval(tool_input)
-            return tool_input
-        except Exception:
-            # Clean and ensure the string is properly enclosed in braces
-            tool_input = tool_input.strip()
-            if not tool_input.startswith("{"):
-                tool_input = "{" + tool_input
-            if not tool_input.endswith("}"):
-                tool_input += "}"
+            # Try to parse as JSON first
+            import json
 
-            # Manually split the input into key-value pairs
-            entries = tool_input.strip("{} ").split(",")
-            formatted_entries = []
+            parsed = json.loads(tool_input)
+            return json.dumps(parsed)
+        except json.JSONDecodeError:
+            try:
+                # Try ast.literal_eval as fallback
+                import ast
 
-            for entry in entries:
-                if ":" not in entry:
-                    continue  # Skip malformed entries
-                key, value = entry.split(":", 1)
+                parsed = ast.literal_eval(tool_input)
+                return json.dumps(parsed)
+            except Exception:
+                # Fall back to current string parsing logic
+                # Clean and ensure the string is properly enclosed in braces
+                tool_input = tool_input.strip()
+                if not tool_input.startswith("{"):
+                    tool_input = "{" + tool_input
+                if not tool_input.endswith("}"):
+                    tool_input += "}"
 
-                # Remove extraneous white spaces and quotes, replace single quotes
-                key = key.strip().strip('"').replace("'", '"')
-                value = value.strip()
+                # Manually split the input into key-value pairs
+                entries = tool_input.strip("{} ").split(",")
+                formatted_entries = []
 
-                # Handle replacement of single quotes at the start and end of the value string
-                if value.startswith("'") and value.endswith("'"):
-                    value = value[1:-1]  # Remove single quotes
-                    value = (
-                        '"' + value.replace('"', '\\"') + '"'
-                    )  # Re-encapsulate with double quotes
-                elif value.isdigit():  # Check if value is a digit, hence integer
-                    value = value
-                elif value.lower() in [
-                    "true",
-                    "false",
-                    "null",
-                ]:  # Check for boolean and null values
-                    value = value.lower()
-                else:
-                    # Assume the value is a string and needs quotes
-                    value = '"' + value.replace('"', '\\"') + '"'
+                for entry in entries:
+                    if ":" not in entry:
+                        continue  # Skip malformed entries
+                    key, value = entry.split(":", 1)
 
-                # Rebuild the entry with proper quoting
-                formatted_entry = f'"{key}": {value}'
-                formatted_entries.append(formatted_entry)
+                    # Remove extraneous white spaces and quotes
+                    key = key.strip().strip('"').replace("'", '"')
+                    value = value.strip().lower()  # Convert to lowercase for comparison
 
-            # Reconstruct the JSON string
-            new_json_string = "{" + ", ".join(formatted_entries) + "}"
-            return new_json_string
+                    # Handle special JSON values
+                    if value in ["null", "none"]:  # Support both "null" and None
+                        value = "null"
+                    elif value in ["true", "True"]:  # Support both "true" and True
+                        value = "true"
+                    elif value in ["false", "False"]:  # Support both "false" and False
+                        value = "false"
+                    elif value.isdigit():  # Check if value is a digit
+                        value = value
+                    else:
+                        # Assume the value is a string and needs quotes
+                        value = '"' + value.replace('"', '\\"').strip("\"'") + '"'
+
+                    # Rebuild the entry with proper quoting
+                    formatted_entry = f'"{key}": {value}'
+                    formatted_entries.append(formatted_entry)
+
+                # Reconstruct the JSON string
+                new_json_string = "{" + ", ".join(formatted_entries) + "}"
+                return new_json_string
 
     def on_tool_error(self, tool: Any, tool_calling: ToolCalling, e: Exception) -> None:
         event_data = self._prepare_event_data(tool, tool_calling)
