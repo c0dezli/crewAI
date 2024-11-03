@@ -1,13 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 from crewai.utilities import I18N
+from crewai.tools import BaseTool
 
 
 class Prompts(BaseModel):
     """Manages and generates prompts for a generic agent."""
 
     i18n: I18N = Field(default=I18N())
-    tools: list[Any] = Field(default=[])
+    tools: list[BaseTool] = Field(default=[])
     system_template: Optional[str] = None
     prompt_template: Optional[str] = None
     response_template: Optional[str] = None
