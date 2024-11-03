@@ -335,11 +335,7 @@ class ToolUsage:
         tool = self._select_tool(tool_name)
         try:
             # Get and use the validated input
-            validated_input = self._validate_tool_input(self.action.tool_input)
-            # Parse the validated JSON string back to a dict
-            import json
-
-            arguments = json.loads(validated_input)
+            arguments = self._parse_tool_input(self.action.tool_input)
 
             return ToolCalling(
                 tool_name=tool.name,
@@ -385,22 +381,33 @@ class ToolUsage:
                 )
             return self._tool_calling(tool_string)
 
-    def _validate_tool_input(self, tool_input: str) -> str:
+    def _parse_tool_input(self, tool_input: str) -> dict:
+        """Parse tool input string into a dictionary.
+
+        Args:
+            tool_input (str): JSON-formatted string input
+
+        Returns:
+            dict: Parsed tool arguments
+
+        Raises:
+            ValueError: If input cannot be parsed into valid arguments
+        """
         try:
             # Try to parse as JSON first
             import json
 
             parsed = json.loads(tool_input)
-            return json.dumps(parsed)
+            return parsed
         except json.JSONDecodeError as e:
             try:
                 # Try ast.literal_eval as fallback
                 import ast
 
                 parsed = ast.literal_eval(tool_input)
-                return json.dumps(parsed)
+                return parsed
             except Exception as e:
-                # Fall back to current string parsing logic
+                # Fall back to string parsing logic
                 # Clean and ensure the string is properly enclosed in braces
                 tool_input = tool_input.strip()
                 if not tool_input.startswith("{"):
@@ -440,7 +447,7 @@ class ToolUsage:
 
                 # Reconstruct the JSON string
                 new_json_string = "{" + ", ".join(formatted_entries) + "}"
-                return new_json_string
+                return json.loads(new_json_string)
 
     def on_tool_error(self, tool: Any, tool_calling: ToolCalling, e: Exception) -> None:
         event_data = self._prepare_event_data(tool, tool_calling)
