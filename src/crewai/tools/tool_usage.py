@@ -41,7 +41,6 @@ class ToolUsage:
       task: Task being executed.
       tools_handler: Tools handler that will manage the tool usage.
       tools: List of tools available for the agent.
-      original_tools: Original tools available for the agent before being converted to BaseTool.
       tools_description: Description of the tools available for the agent.
       tools_names: Names of the tools available for the agent.
       function_calling_llm: Language model to be used for the tool usage.
@@ -51,7 +50,6 @@ class ToolUsage:
         self,
         tools_handler: ToolsHandler,
         tools: List[BaseTool],
-        original_tools: List[Any],
         tools_description: str,
         tools_names: str,
         task: Task,
@@ -69,7 +67,6 @@ class ToolUsage:
         self.tools_description = tools_description
         self.tools_names = tools_names
         self.tools_handler = tools_handler
-        self.original_tools = original_tools
         self.tools = tools
         self.task = task
         self.action = action
@@ -111,7 +108,7 @@ class ToolUsage:
     def _use(
         self,
         tool_string: str,
-        tool: Any,
+        tool: BaseTool,
         calling: Union[ToolCalling, InstructorToolCalling],
     ) -> str:  # TODO: Fix this return type
         tool_event = agentops.ToolEvent(name=calling.tool_name) if agentops else None  # type: ignore
@@ -142,10 +139,6 @@ class ToolUsage:
             )
             from_cache = result is not None
 
-        original_tool = next(
-            (ot for ot in self.original_tools if ot.name == tool.name), None
-        )
-
         if result is None:  #! finecwg: if not result --> if result is None
             try:
                 if calling.tool_name in [
@@ -165,12 +158,12 @@ class ToolUsage:
                             for k, v in calling.arguments.items()
                             if k in acceptable_args
                         }
-                        result = tool.invoke(input=arguments)
+                        result = tool.run(**arguments)
                     except Exception:
                         arguments = calling.arguments
-                        result = tool.invoke(input=arguments)
+                        result = tool.run(**arguments)
                 else:
-                    result = tool.invoke(input={})
+                    result = tool.run()
             except Exception as e:
                 self.on_tool_error(tool=tool, tool_calling=calling, e=e)
                 self._run_attempts += 1
@@ -199,10 +192,10 @@ class ToolUsage:
             if self.tools_handler:
                 should_cache = True
                 if (
-                    hasattr(original_tool, "cache_function")
-                    and original_tool.cache_function  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
+                    hasattr(tool, "cache_function")
+                    and tool.cache_function  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
                 ):
-                    should_cache = original_tool.cache_function(  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
+                    should_cache = tool.cache_function(  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
                         calling.arguments, result
                     )
 
@@ -232,10 +225,10 @@ class ToolUsage:
         )
 
         if (
-            hasattr(original_tool, "result_as_answer")
-            and original_tool.result_as_answer  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
+            hasattr(tool, "result_as_answer")
+            and tool.result_as_answer  # type: ignore # Item "None" of "Any | None" has no attribute "cache_function"
         ):
-            result_as_answer = original_tool.result_as_answer  # type: ignore # Item "None" of "Any | None" has no attribute "result_as_answer"
+            result_as_answer = tool.result_as_answer  # type: ignore # Item "None" of "Any | None" has no attribute "result_as_answer"
             data["result_as_answer"] = result_as_answer
 
         self.agent.tools_results.append(data)

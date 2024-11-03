@@ -91,7 +91,6 @@ def test_tool_usage_render():
     tool_usage = ToolUsage(
         tools_handler=MagicMock(),
         tools=[tool],
-        original_tools=[tool],
         tools_description="Sample tool for testing",
         tools_names="random_number_generator",
         task=MagicMock(),

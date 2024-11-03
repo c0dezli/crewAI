@@ -38,7 +38,7 @@ class BaseAgent(ABC, BaseModel):
         verbose (bool): Verbose mode for the Agent Execution.
         max_rpm (Optional[int]): Maximum number of requests per minute for the agent execution.
         allow_delegation (bool): Allow delegation of tasks to agents.
-        tools (Optional[List[Any]]): Tools at the agent's disposal.
+        tools (Optional[List[BaseTool]]): Tools at the agent's disposal.
         max_iter (Optional[int]): Maximum iterations for an agent to execute a task.
         agent_executor (InstanceOf): An instance of the CrewAgentExecutor class.
         llm (Any): Language model that will run the agent.
@@ -54,8 +54,6 @@ class BaseAgent(ABC, BaseModel):
             Abstract method to execute a task.
         create_agent_executor(tools=None) -> None:
             Abstract method to create an agent executor.
-        _parse_tools(tools: List[BaseTool]) -> List[Any]:
-            Abstract method to parse tools.
         get_delegation_tools(agents: List["BaseAgent"]):
             Abstract method to set the agents task tools for handling delegation and question asking to other agents in crew.
         get_output_converter(llm, model, instructions):
@@ -195,10 +193,6 @@ class BaseAgent(ABC, BaseModel):
 
     @abstractmethod
     def create_agent_executor(self, tools=None) -> None:
-        pass
-
-    @abstractmethod
-    def _parse_tools(self, tools: List[BaseTool]) -> List[BaseTool]:
         pass
 
     @abstractmethod

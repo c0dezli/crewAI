@@ -13,6 +13,7 @@ from crewai.agents.parser import (
 )
 from crewai.agents.tools_handler import ToolsHandler
 from crewai.tools.tool_usage import ToolUsage, ToolUsageErrorException
+from crewai.tools import BaseTool
 from crewai.utilities import I18N, Printer
 from crewai.utilities.constants import TRAINING_DATA_FILE
 from crewai.utilities.exceptions.context_window_exceeding_exception import (
@@ -33,13 +34,12 @@ class CrewAgentExecutor(CrewAgentExecutorMixin):
         agent: BaseAgent,
         prompt: dict[str, str],
         max_iter: int,
-        tools: List[Any],
+        tools: List[BaseTool],
         tools_names: str,
         stop_words: List[str],
         tools_description: str,
         tools_handler: ToolsHandler,
         step_callback: Any = None,
-        original_tools: List[Any] = [],
         function_calling_llm: Any = None,
         respect_context_window: bool = False,
         request_within_rpm_limit: Any = None,
@@ -58,7 +58,6 @@ class CrewAgentExecutor(CrewAgentExecutorMixin):
         self.callbacks = callbacks
         self._printer: Printer = Printer()
         self.tools_handler = tools_handler
-        self.original_tools = original_tools
         self.step_callback = step_callback
         self.use_stop_words = self.llm.supports_stop_words()
         self.tools_description = tools_description
@@ -235,7 +234,6 @@ class CrewAgentExecutor(CrewAgentExecutorMixin):
         tool_usage = ToolUsage(
             tools_handler=self.tools_handler,
             tools=self.tools,
-            original_tools=self.original_tools,
             tools_description=self.tools_description,
             tools_names=self.tools_names,
             function_calling_llm=self.function_calling_llm,
