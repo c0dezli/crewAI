@@ -15,6 +15,8 @@ from crewai.tools.tool_calling import InstructorToolCalling, ToolCalling
 from crewai.tools.tool_usage_events import ToolUsageError, ToolUsageFinished
 from crewai.utilities import I18N, Converter, ConverterError, Printer
 
+import traceback
+
 agentops = None
 if os.environ.get("AGENTOPS_API_KEY"):
     try:
@@ -332,9 +334,19 @@ class ToolUsage:
         tool_name = self.action.tool
         tool = self._select_tool(tool_name)
         try:
-            tool_input = self._validate_tool_input(self.action.tool_input)
-            arguments = ast.literal_eval(tool_input)
-        except Exception:
+            # Get and use the validated input
+            validated_input = self._validate_tool_input(self.action.tool_input)
+            # Parse the validated JSON string back to a dict
+            import json
+
+            arguments = json.loads(validated_input)
+
+            return ToolCalling(
+                tool_name=tool.name,
+                arguments=arguments,
+                log=tool_string,
+            )
+        except Exception as e:
             if raise_error:
                 raise
             else:
@@ -349,12 +361,6 @@ class ToolUsage:
                 return ToolUsageErrorException(  # type: ignore # Incompatible return value type (got "ToolUsageErrorException", expected "ToolCalling | InstructorToolCalling")
                     f'{self._i18n.errors("tool_arguments_error")}'
                 )
-
-        return ToolCalling(
-            tool_name=tool.name,
-            arguments=arguments,
-            log=tool_string,  # type: ignore
-        )
 
     def _tool_calling(
         self, tool_string: str
@@ -386,14 +392,14 @@ class ToolUsage:
 
             parsed = json.loads(tool_input)
             return json.dumps(parsed)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             try:
                 # Try ast.literal_eval as fallback
                 import ast
 
                 parsed = ast.literal_eval(tool_input)
                 return json.dumps(parsed)
-            except Exception:
+            except Exception as e:
                 # Fall back to current string parsing logic
                 # Clean and ensure the string is properly enclosed in braces
                 tool_input = tool_input.strip()
