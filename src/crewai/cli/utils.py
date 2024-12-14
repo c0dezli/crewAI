@@ -1,4 +1,3 @@
-import importlib.metadata
 import os
 import shutil
 import sys
@@ -9,7 +8,6 @@ import click
 import tomli
 from rich.console import Console
 
-from crewai.cli.authentication.utils import TokenManager
 from crewai.cli.constants import ENV_VARS
 
 if sys.version_info >= (3, 11):
@@ -35,26 +33,6 @@ def copy_template(src, dst, name, class_name, folder_name):
     click.secho(f"  - Created {dst}", fg="green")
 
 
-# Drop the simple_toml_parser when we move to python3.11
-def simple_toml_parser(content):
-    result = {}
-    current_section = result
-    for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            # New section
-            section = line[1:-1].split(".")
-            current_section = result
-            for key in section:
-                current_section = current_section.setdefault(key, {})
-        elif "=" in line:
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"')
-            current_section[key] = value
-    return result
-
-
 def read_toml(file_path: str = "pyproject.toml"):
     """Read the content of a TOML file and return it as a dictionary."""
     with open(file_path, "rb") as f:
@@ -65,7 +43,7 @@ def read_toml(file_path: str = "pyproject.toml"):
 def parse_toml(content):
     if sys.version_info >= (3, 11):
         return tomllib.loads(content)
-    return simple_toml_parser(content)
+    return tomli.loads(content)
 
 
 def get_project_name(
@@ -137,11 +115,6 @@ def _get_nested_value(data: Dict[str, Any], keys: List[str]) -> Any:
     return reduce(dict.__getitem__, keys, data)
 
 
-def get_crewai_version() -> str:
-    """Get the version number of CrewAI running the CLI"""
-    return importlib.metadata.version("crewai")
-
-
 def fetch_and_json_env_file(env_file_path: str = ".env") -> dict:
     """Fetch the environment variables from a .env file and return them as a dictionary."""
     try:
@@ -164,14 +137,6 @@ def fetch_and_json_env_file(env_file_path: str = ".env") -> dict:
         print(f"Error reading the .env file: {e}")
 
     return {}
-
-
-def get_auth_token() -> str:
-    """Get the authentication token."""
-    access_token = TokenManager().get_token()
-    if not access_token:
-        raise Exception()
-    return access_token
 
 
 def tree_copy(source, destination):

@@ -1,11 +1,10 @@
 import asyncio
 import json
-import os
 import uuid
 import warnings
 from concurrent.futures import Future
 from hashlib import md5
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from pydantic import (
     UUID4,
@@ -23,10 +22,13 @@ from crewai.agent import Agent
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.agents.cache import CacheHandler
 from crewai.crews.crew_output import CrewOutput
+from crewai.knowledge.knowledge import Knowledge
+from crewai.knowledge.source.base_knowledge_source import BaseKnowledgeSource
 from crewai.llm import LLM
 from crewai.memory.entity.entity_memory import EntityMemory
 from crewai.memory.long_term.long_term_memory import LongTermMemory
 from crewai.memory.short_term.short_term_memory import ShortTermMemory
+from crewai.memory.user.user_memory import UserMemory
 from crewai.process import Process
 from crewai.task import Task
 from crewai.tasks.conditional_task import ConditionalTask
@@ -35,9 +37,7 @@ from crewai.telemetry import Telemetry
 from crewai.tools.agent_tools.agent_tools import AgentTools
 from crewai.types.usage_metrics import UsageMetrics
 from crewai.utilities import I18N, FileHandler, Logger, RPMController
-from crewai.utilities.constants import (
-    TRAINING_DATA_FILE,
-)
+from crewai.utilities.constants import TRAINING_DATA_FILE
 from crewai.utilities.evaluators.crew_evaluator_handler import CrewEvaluator
 from crewai.utilities.evaluators.task_evaluator import TaskEvaluator
 from crewai.utilities.formatter import (
@@ -48,15 +48,11 @@ from crewai.utilities.planning_handler import CrewPlanner
 from crewai.utilities.task_output_storage_handler import TaskOutputStorageHandler
 from crewai.utilities.training_handler import CrewTrainingHandler
 
-agentops = None
-if os.environ.get("AGENTOPS_API_KEY"):
-    try:
-        import agentops  # type: ignore
-    except ImportError:
-        pass
+try:
+    import agentops  # type: ignore
+except ImportError:
+    agentops = None
 
-if TYPE_CHECKING:
-    from crewai.pipeline.pipeline import Pipeline
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
@@ -71,6 +67,7 @@ class Crew(BaseModel):
         manager_llm: The language model that will run manager agent.
         manager_agent: Custom agent that will be used as manager.
         memory: Whether the crew should use memory to store memories of it's execution.
+        memory_config: Configuration for the memory to be used for the crew.
         cache: Whether the crew should use a cache to store the results of the tools execution.
         function_calling_llm: The language model that will run the tool calling for all the agents.
         process: The process flow that the crew will follow (e.g., sequential, hierarchical).
@@ -94,6 +91,7 @@ class Crew(BaseModel):
     _short_term_memory: Optional[InstanceOf[ShortTermMemory]] = PrivateAttr()
     _long_term_memory: Optional[InstanceOf[LongTermMemory]] = PrivateAttr()
     _entity_memory: Optional[InstanceOf[EntityMemory]] = PrivateAttr()
+    _user_memory: Optional[InstanceOf[UserMemory]] = PrivateAttr()
     _train: Optional[bool] = PrivateAttr(default=False)
     _train_iteration: Optional[int] = PrivateAttr()
     _inputs: Optional[Dict[str, Any]] = PrivateAttr(default=None)
@@ -114,6 +112,10 @@ class Crew(BaseModel):
         default=False,
         description="Whether the crew should use memory to store memories of it's execution",
     )
+    memory_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Configuration for the memory to be used for the crew.",
+    )
     short_term_memory: Optional[InstanceOf[ShortTermMemory]] = Field(
         default=None,
         description="An Instance of the ShortTermMemory to be used by the Crew",
@@ -126,7 +128,11 @@ class Crew(BaseModel):
         default=None,
         description="An Instance of the EntityMemory to be used by the Crew",
     )
-    embedder: Optional[Any] = Field(
+    user_memory: Optional[InstanceOf[UserMemory]] = Field(
+        default=None,
+        description="An instance of the UserMemory to be used by the Crew to store/fetch memories of a specific user.",
+    )
+    embedder: Optional[dict] = Field(
         default=None,
         description="Configuration for the embedder to be used for the crew.",
     )
@@ -153,6 +159,16 @@ class Crew(BaseModel):
     task_callback: Optional[Any] = Field(
         default=None,
         description="Callback to be executed after each task for all agents execution.",
+    )
+    before_kickoff_callbacks: List[
+        Callable[[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]]
+    ] = Field(
+        default_factory=list,
+        description="List of callbacks to be executed before crew kickoff. It may be used to adjust inputs before the crew is executed.",
+    )
+    after_kickoff_callbacks: List[Callable[[CrewOutput], CrewOutput]] = Field(
+        default_factory=list,
+        description="List of callbacks to be executed after crew kickoff. It may be used to adjust the output of the crew.",
     )
     max_rpm: Optional[int] = Field(
         default=None,
@@ -181,6 +197,13 @@ class Crew(BaseModel):
     execution_logs: List[Dict[str, Any]] = Field(
         default=[],
         description="List of execution logs for tasks",
+    )
+    knowledge_sources: Optional[List[BaseKnowledgeSource]] = Field(
+        default=None,
+        description="Knowledge sources for the crew. Add knowledge sources to the knowledge object.",
+    )
+    _knowledge: Optional[Knowledge] = PrivateAttr(
+        default=None,
     )
 
     @field_validator("id", mode="before")
@@ -238,13 +261,42 @@ class Crew(BaseModel):
             self._short_term_memory = (
                 self.short_term_memory
                 if self.short_term_memory
-                else ShortTermMemory(crew=self, embedder_config=self.embedder)
+                else ShortTermMemory(
+                    crew=self,
+                    embedder_config=self.embedder,
+                )
             )
             self._entity_memory = (
                 self.entity_memory
                 if self.entity_memory
                 else EntityMemory(crew=self, embedder_config=self.embedder)
             )
+            if hasattr(self, "memory_config") and self.memory_config is not None:
+                self._user_memory = (
+                    self.user_memory if self.user_memory else UserMemory(crew=self)
+                )
+            else:
+                self._user_memory = None
+        return self
+
+    @model_validator(mode="after")
+    def create_crew_knowledge(self) -> "Crew":
+        """Create the knowledge for the crew."""
+        if self.knowledge_sources:
+            try:
+                if isinstance(self.knowledge_sources, list) and all(
+                    isinstance(k, BaseKnowledgeSource) for k in self.knowledge_sources
+                ):
+                    self._knowledge = Knowledge(
+                        sources=self.knowledge_sources,
+                        embedder_config=self.embedder,
+                        collection_name="crew",
+                    )
+
+            except Exception as e:
+                self._logger.log(
+                    "warning", f"Failed to init knowledge: {e}", color="yellow"
+                )
         return self
 
     @model_validator(mode="after")
@@ -445,18 +497,22 @@ class Crew(BaseModel):
         training_data = CrewTrainingHandler(TRAINING_DATA_FILE).load()
 
         for agent in train_crew.agents:
-            result = TaskEvaluator(agent).evaluate_training_data(
-                training_data=training_data, agent_id=str(agent.id)
-            )
+            if training_data.get(str(agent.id)):
+                result = TaskEvaluator(agent).evaluate_training_data(
+                    training_data=training_data, agent_id=str(agent.id)
+                )
 
-            CrewTrainingHandler(filename).save_trained_data(
-                agent_id=str(agent.role), trained_data=result.model_dump()
-            )
+                CrewTrainingHandler(filename).save_trained_data(
+                    agent_id=str(agent.role), trained_data=result.model_dump()
+                )
 
     def kickoff(
         self,
         inputs: Optional[Dict[str, Any]] = None,
     ) -> CrewOutput:
+        for before_callback in self.before_kickoff_callbacks:
+            inputs = before_callback(inputs)
+
         """Starts the crew to work on its assigned tasks."""
         self._execution_span = self._telemetry.crew_execution_span(self, inputs)
         self._task_output_handler.reset()
@@ -498,6 +554,9 @@ class Crew(BaseModel):
             raise NotImplementedError(
                 f"The process '{self.process}' is not implemented yet."
             )
+
+        for after_callback in self.after_kickoff_callbacks:
+            result = after_callback(result)
 
         metrics += [agent._token_process.get_summary() for agent in self.agents]
 
@@ -923,6 +982,11 @@ class Crew(BaseModel):
         result = self._execute_tasks(self.tasks, start_index, True)
         return result
 
+    def query_knowledge(self, query: List[str]) -> Union[List[Dict[str, Any]], None]:
+        if self._knowledge:
+            return self._knowledge.query(query)
+        return None
+
     def copy(self):
         """Create a deep copy of the Crew."""
 
@@ -995,6 +1059,7 @@ class Crew(BaseModel):
             agentops.end_session(
                 end_state="Success",
                 end_state_reason="Finished Execution",
+                is_auto_end=True,
             )
         self._telemetry.end_crew(self, final_string_output)
 
@@ -1033,18 +1098,6 @@ class Crew(BaseModel):
             test_crew.kickoff(inputs=inputs)
 
         evaluator.print_crew_evaluation_result()
-
-    def __rshift__(self, other: "Crew") -> "Pipeline":
-        """
-        Implements the >> operator to add another Crew to an existing Pipeline.
-        """
-        from crewai.pipeline.pipeline import Pipeline
-
-        if not isinstance(other, Crew):
-            raise TypeError(
-                f"Unsupported operand type for >>: '{type(self).__name__}' and '{type(other).__name__}'"
-            )
-        return Pipeline(stages=[self, other])
 
     def __repr__(self):
         return f"Crew(id={self.id}, process={self.process}, number_of_agents={len(self.agents)}, number_of_tasks={len(self.tasks)})"

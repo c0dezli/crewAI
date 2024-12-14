@@ -14,8 +14,15 @@ from typing import (
     cast,
 )
 
+from blinker import Signal
 from pydantic import BaseModel, ValidationError
 
+from crewai.flow.flow_events import (
+    FlowFinishedEvent,
+    FlowStartedEvent,
+    MethodExecutionFinishedEvent,
+    MethodExecutionStartedEvent,
+)
 from crewai.flow.flow_visualizer import plot_flow
 from crewai.flow.utils import get_possible_return_constants
 from crewai.telemetry import Telemetry
@@ -131,7 +138,6 @@ class FlowMeta(type):
                 condition_type = getattr(attr_value, "__condition_type__", "OR")
                 listeners[attr_name] = (condition_type, methods)
 
-            # TODO: should we add a check for __condition_type__ 'AND'?
             elif hasattr(attr_value, "__is_router__"):
                 routers[attr_value.__router_for__] = attr_name
                 possible_returns = get_possible_return_constants(attr_value)
@@ -160,6 +166,7 @@ class Flow(Generic[T], metaclass=FlowMeta):
     _routers: Dict[str, str] = {}
     _router_paths: Dict[str, List[str]] = {}
     initial_state: Union[Type[T], T, None] = None
+    event_emitter = Signal("event_emitter")
 
     def __class_getitem__(cls: Type["Flow"], item: Type[T]) -> Type["Flow"]:
         class _FlowGeneric(cls):  # type: ignore
@@ -171,8 +178,7 @@ class Flow(Generic[T], metaclass=FlowMeta):
     def __init__(self) -> None:
         self._methods: Dict[str, Callable] = {}
         self._state: T = self._create_initial_state()
-        self._executed_methods: Set[str] = set()
-        self._scheduled_tasks: Set[str] = set()
+        self._method_execution_counts: Dict[str, int] = {}
         self._pending_and_listeners: Dict[str, Set[str]] = {}
         self._method_outputs: List[Any] = []  # List to store all method outputs
 
@@ -255,6 +261,14 @@ class Flow(Generic[T], metaclass=FlowMeta):
         Returns:
             The final output from the flow execution.
         """
+        self.event_emitter.send(
+            self,
+            event=FlowStartedEvent(
+                type="flow_started",
+                flow_name=self.__class__.__name__,
+            ),
+        )
+
         if inputs is not None:
             self._initialize_state(inputs)
         return asyncio.run(self.kickoff_async())
@@ -269,8 +283,6 @@ class Flow(Generic[T], metaclass=FlowMeta):
         Returns:
             The final output from the flow execution.
         """
-        if inputs is not None:
-            self._initialize_state(inputs)
         if not self._start_methods:
             raise ValueError("No start method defined")
 
@@ -287,11 +299,19 @@ class Flow(Generic[T], metaclass=FlowMeta):
         # Run all start methods concurrently
         await asyncio.gather(*tasks)
 
-        # Return the final output (from the last executed method)
-        if self._method_outputs:
-            return self._method_outputs[-1]
-        else:
-            return None  # Or raise an exception if no methods were executed
+        # Determine the final output (from the last executed method)
+        final_output = self._method_outputs[-1] if self._method_outputs else None
+
+        self.event_emitter.send(
+            self,
+            event=FlowFinishedEvent(
+                type="flow_finished",
+                flow_name=self.__class__.__name__,
+                result=final_output,
+            ),
+        )
+
+        return final_output
 
     async def _execute_start_method(self, start_method_name: str) -> None:
         result = await self._execute_method(
@@ -309,7 +329,10 @@ class Flow(Generic[T], metaclass=FlowMeta):
         )
         self._method_outputs.append(result)  # Store the output
 
-        self._executed_methods.add(method_name)
+        # Track method execution counts
+        self._method_execution_counts[method_name] = (
+            self._method_execution_counts.get(method_name, 0) + 1
+        )
 
         return result
 
@@ -319,39 +342,48 @@ class Flow(Generic[T], metaclass=FlowMeta):
         if trigger_method in self._routers:
             router_method = self._methods[self._routers[trigger_method]]
             path = await self._execute_method(
-                trigger_method, router_method
-            )  # TODO: Change or not?
-            # Use the path as the new trigger method
+                self._routers[trigger_method], router_method
+            )
             trigger_method = path
 
         for listener_name, (condition_type, methods) in self._listeners.items():
             if condition_type == "OR":
                 if trigger_method in methods:
-                    if (
-                        listener_name not in self._executed_methods
-                        and listener_name not in self._scheduled_tasks
-                    ):
-                        self._scheduled_tasks.add(listener_name)
-                        listener_tasks.append(
-                            self._execute_single_listener(listener_name, result)
-                        )
+                    # Schedule the listener without preventing re-execution
+                    listener_tasks.append(
+                        self._execute_single_listener(listener_name, result)
+                    )
             elif condition_type == "AND":
-                if all(method in self._executed_methods for method in methods):
-                    if (
-                        listener_name not in self._executed_methods
-                        and listener_name not in self._scheduled_tasks
-                    ):
-                        self._scheduled_tasks.add(listener_name)
-                        listener_tasks.append(
-                            self._execute_single_listener(listener_name, result)
-                        )
+                # Initialize pending methods for this listener if not already done
+                if listener_name not in self._pending_and_listeners:
+                    self._pending_and_listeners[listener_name] = set(methods)
+                # Remove the trigger method from pending methods
+                self._pending_and_listeners[listener_name].discard(trigger_method)
+                if not self._pending_and_listeners[listener_name]:
+                    # All required methods have been executed
+                    listener_tasks.append(
+                        self._execute_single_listener(listener_name, result)
+                    )
+                    # Reset pending methods for this listener
+                    self._pending_and_listeners.pop(listener_name, None)
 
         # Run all listener tasks concurrently and wait for them to complete
-        await asyncio.gather(*listener_tasks)
+        if listener_tasks:
+            await asyncio.gather(*listener_tasks)
 
     async def _execute_single_listener(self, listener_name: str, result: Any) -> None:
         try:
             method = self._methods[listener_name]
+
+            self.event_emitter.send(
+                self,
+                event=MethodExecutionStartedEvent(
+                    type="method_execution_started",
+                    method_name=listener_name,
+                    flow_name=self.__class__.__name__,
+                ),
+            )
+
             sig = inspect.signature(method)
             params = list(sig.parameters.values())
 
@@ -367,8 +399,14 @@ class Flow(Generic[T], metaclass=FlowMeta):
                 # If listener does not expect parameters, call without arguments
                 listener_result = await self._execute_method(listener_name, method)
 
-            # Remove from scheduled tasks after execution
-            self._scheduled_tasks.discard(listener_name)
+            self.event_emitter.send(
+                self,
+                event=MethodExecutionFinishedEvent(
+                    type="method_execution_finished",
+                    method_name=listener_name,
+                    flow_name=self.__class__.__name__,
+                ),
+            )
 
             # Execute listeners of this listener
             await self._execute_listeners(listener_name, listener_result)
